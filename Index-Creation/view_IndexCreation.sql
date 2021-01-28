@@ -5,6 +5,15 @@
 -- 2009-05-21 Changed index scoring method; Disregards indexes with [Score] < 100000 and [User_Hits_on_Missing_Index] < 99;
 -- 2013-03-21 Changed database loop method;
 -- 2013-11-10 Added search for redundant indexes in missing indexes;
+-- 2021-01-28 Remove the use tempDb and FQDN to tempDB so it can be used on Azure SQL 
+
+--
+-- 2007-10-11 Pedro Lopes (Microsoft) pedro.lopes@microsoft.com (http://aka.ms/sqlinsights/)
+--
+-- 2008-01-17 Check for possibly redundant indexes in the output.
+-- 2009-05-21 Changed index scoring method; Disregards indexes with [Score] < 100000 and [User_Hits_on_Missing_Index] < 99;
+-- 2013-03-21 Changed database loop method;
+-- 2013-11-10 Added search for redundant indexes in missing indexes;
 
 SET NOCOUNT ON;
 SET QUOTED_IDENTIFIER ON;
@@ -18,8 +27,8 @@ ELSE
 SET @editionCheck = 0; -- does not support enterprise only features
 
 -- Create the helper functions
-EXEC ('USE tempdb; IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''tempdb.dbo.fn_createindex_allcols'')) DROP FUNCTION dbo.fn_createindex_allcols')
-EXEC ('USE tempdb; EXEC(''
+EXEC ('IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''dbo.fn_createindex_allcols'')) DROP FUNCTION dbo.fn_createindex_allcols')
+EXEC ('EXEC(''
 CREATE FUNCTION dbo.fn_createindex_allcols (@ix_handle int)
 RETURNS NVARCHAR(max)
 AS
@@ -43,8 +52,8 @@ BEGIN
 END'')
 ')
 
-EXEC ('USE tempdb; IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''tempdb.dbo.fn_createindex_keycols'')) DROP FUNCTION dbo.fn_createindex_keycols')
-EXEC ('USE tempdb; EXEC(''
+EXEC ('IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''dbo.fn_createindex_keycols'')) DROP FUNCTION dbo.fn_createindex_keycols')
+EXEC ('EXEC(''
 CREATE FUNCTION dbo.fn_createindex_keycols (@ix_handle int)
 RETURNS NVARCHAR(max)
 AS
@@ -69,8 +78,8 @@ BEGIN
 END'')
 ')
 
-EXEC ('USE tempdb; IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''tempdb.dbo.fn_createindex_includedcols'')) DROP FUNCTION dbo.fn_createindex_includedcols')
-EXEC ('USE tempdb; EXEC(''
+EXEC ('IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''dbo.fn_createindex_includedcols'')) DROP FUNCTION dbo.fn_createindex_includedcols')
+EXEC ('EXEC(''
 CREATE FUNCTION dbo.fn_createindex_includedcols (@ix_handle int)
 RETURNS NVARCHAR(max)
 AS
@@ -95,9 +104,9 @@ BEGIN
 END'')
 ')
 
-IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('tempdb.dbo.#IndexCreation'))
+IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('dbo.#IndexCreation'))
 DROP TABLE #IndexCreation
-IF NOT EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('tempdb.dbo.#IndexCreation'))
+IF NOT EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('dbo.#IndexCreation'))
 CREATE TABLE #IndexCreation (
 	[database_id] int,
 	DBName VARCHAR(255),
@@ -116,9 +125,9 @@ CREATE TABLE #IndexCreation (
 	[IncludedColsOrdered] NVARCHAR(max)
 	)
 
-IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('tempdb.dbo.#IndexRedundant'))
+IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('dbo.#IndexRedundant'))
 DROP TABLE #IndexRedundant
-IF NOT EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('tempdb.dbo.#IndexRedundant'))
+IF NOT EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID('dbo.#IndexRedundant'))
 CREATE TABLE #IndexRedundant (
 	DBName VARCHAR(255),
 	[Table] VARCHAR(255),
@@ -131,8 +140,8 @@ CREATE TABLE #IndexRedundant (
 
 INSERT INTO #IndexCreation
 SELECT i.database_id,
-	m.[name],
-	RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3)) AS [Table],
+db_name() as [db_name],
+	RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3)) AS [Table],
 	i.index_handle AS [ix_handle],
 	[User_Hits_on_Missing_Index] = (s.user_seeks + s.user_scans),
 	s.avg_user_impact, -- Query cost would reduce by this amount in percentage, on average.
@@ -145,13 +154,13 @@ SELECT i.database_id,
 			WHEN (i.equality_columns IS NULL AND i.inequality_columns IS NOT NULL) THEN i.inequality_columns
 			ELSE i.equality_columns + ',' + i.inequality_columns END AS [KeyCols],
 	i.included_columns AS [IncludedCols],
-	'IX_' + LEFT(RIGHT(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3)), LEN(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3))) - (CHARINDEX('.', RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3)), 1)) - 1),
-		LEN(RIGHT(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3)), LEN(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3))) - (CHARINDEX('.', RIGHT(i.[statement], LEN(i.[statement]) - (LEN(m.[name]) + 3)), 1)) - 1)) - 1) + '_' + CAST(i.index_handle AS NVARCHAR) AS [Ix_Name],
-	tempdb.dbo.fn_createindex_allcols(i.index_handle), 
-	tempdb.dbo.fn_createindex_keycols(i.index_handle),
-	tempdb.dbo.fn_createindex_includedcols(i.index_handle)
+	'IX_' + LEFT(RIGHT(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3)), LEN(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3))) - (CHARINDEX('.', RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3)), 1)) - 1),
+		LEN(RIGHT(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3)), LEN(RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3))) - (CHARINDEX('.', RIGHT(i.[statement], LEN(i.[statement]) - (LEN(db_name()) + 3)), 1)) - 1)) - 1) + '_' + CAST(i.index_handle AS NVARCHAR) AS [Ix_Name],
+	dbo.fn_createindex_allcols(i.index_handle), 
+	dbo.fn_createindex_keycols(i.index_handle),
+	dbo.fn_createindex_includedcols(i.index_handle)
 FROM sys.dm_db_missing_index_details i
-INNER JOIN master.sys.databases m ON i.database_id = m.database_id
+--INNER JOIN master.sys.databases m ON i.database_id = m.database_id
 INNER JOIN sys.dm_db_missing_index_groups g ON i.index_handle = g.index_handle
 INNER JOIN sys.dm_db_missing_index_group_stats s ON s.group_handle = g.index_group_handle
 WHERE i.database_id > 4
@@ -261,7 +270,7 @@ BEGIN
 END;
 
 DROP TABLE #IndexCreation
-EXEC ('USE tempdb; IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''tempdb.dbo.fn_createindex_keycols'')) DROP FUNCTION dbo.fn_createindex_keycols')
-EXEC ('USE tempdb; IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''tempdb.dbo.fn_createindex_allcols'')) DROP FUNCTION dbo.fn_createindex_allcols')
-EXEC ('USE tempdb; IF EXISTS (SELECT [object_id] FROM tempdb.sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''tempdb.dbo.fn_createindex_includedcols'')) DROP FUNCTION dbo.fn_createindex_includedcols')
+EXEC ('IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''dbo.fn_createindex_keycols'')) DROP FUNCTION dbo.fn_createindex_keycols')
+EXEC ('IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''dbo.fn_createindex_allcols'')) DROP FUNCTION dbo.fn_createindex_allcols')
+EXEC ('IF EXISTS (SELECT [object_id] FROM sys.objects (NOLOCK) WHERE [object_id] = OBJECT_ID(''dbo.fn_createindex_includedcols'')) DROP FUNCTION dbo.fn_createindex_includedcols')
 GO
