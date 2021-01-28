@@ -6,3 +6,5 @@ In the output, you will find the following information:
 -  Missing indexes with the highest user impact. The higher the score, higher is the anticipated improvement for user queries.
 -  Possibly redundant indexes in above list, whcih provides an opportunity to do some index consolidation.
 -  Index creation scripts.
+
+The idea of the script **IndexCrationStatus.sql** it to get an estimation of the percentage of the index cration 
